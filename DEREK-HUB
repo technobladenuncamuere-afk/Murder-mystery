@@ -1,0 +1,543 @@
+--[[
+    ██████╗ Derek Hub | Murder Mystery 2  v2
+    Abrir/Cerrar: botón flotante "D" o tecla RightShift
+    X = confirmación "¿Quieres cerrar el menú?" y descarga total
+    Secciones: Sheriff | Asesino | Visual (ESP + 2 hitbox) | Farm
+]]
+
+local Players = game:GetService("Players")
+local RS        = game:GetService("ReplicatedStorage")
+local Run       = game:GetService("RunService")
+local TS        = game:GetService("TeleportService")
+local UIS       = game:GetService("UserInputService")
+local LP        = Players.LocalPlayer
+local PGui      = LP:WaitForChild("PlayerGui")
+
+local S = {
+    esp = false, auto = false, knife = false, coins = false,
+    fov = 300, rate = 0.15, lastFire = 0, lastKnife = 0,
+    hbMode = nil, hbSize = 14, alive = true
+}
+local esps, hbOrig, conns = {}, {}, {}
+local C = {
+    bg  = Color3.fromRGB(20,20,26),
+    bar = Color3.fromRGB(34,34,44),
+    btn = Color3.fromRGB(48,48,62),
+    txt = Color3.fromRGB(235,235,235),
+    g   = Color3.fromRGB(55,195,115),
+    r   = Color3.fromRGB(225,70,70),
+    a   = Color3.fromRGB(150,95,255)
+}
+
+local function nw(cls, props, parent)
+    local o = Instance.new(cls)
+    for k, v in pairs(props) do o[k] = v end
+    o.Parent = parent
+    return o
+end
+local function cam() return workspace.CurrentCamera end
+
+-- ===================== ROLES =====================
+local function role(p)
+    local c = p.Character
+    if c then
+        if c:FindFirstChild("Knife") then return "ASESINO" end
+        if c:FindFirstChild("Gun") or c:FindFirstChild("Revolver") then return "SHERIFF" end
+    end
+    local b = p:FindFirstChild("Backpack")
+    if b then
+        if b:FindFirstChild("Knife") then return "ASESINO" end
+        if b:FindFirstChild("Gun") or b:FindFirstChild("Revolver") then return "SHERIFF" end
+    end
+    return "INOCENTE"
+end
+local function colOf(r)
+    if r == "ASESINO" then return C.r end
+    if r == "SHERIFF" then return Color3.fromRGB(70,140,255) end
+    return C.g
+end
+local function getMurderer()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character and role(p) == "ASESINO" then return p end
+    end
+end
+
+-- ===================== ESP =====================
+local function addESP(p)
+    if esps[p] or p == LP then return end
+    local c = p.Character
+    if not c then return end
+    local head = c:FindFirstChild("Head")
+    if not head then return end
+    local bg = nw("BillboardGui", {
+        Name = "DerekESP", Size = UDim2.new(0, 220, 0, 52),
+        StudsOffset = Vector3.new(0, 2.6, 0), AlwaysOnTop = true, MaxDistance = 2000
+    }, head)
+    local nm = nw("TextLabel", {
+        Size = UDim2.fromScale(1, 0.5), BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold, TextScaled = true,
+        TextStrokeTransparency = 0, Text = p.Name, TextColor3 = C.txt
+    }, bg)
+    local rl = nw("TextLabel", {
+        Position = UDim2.fromScale(0, 0.5), Size = UDim2.fromScale(1, 0.5),
+        BackgroundTransparency = 1, Font = Enum.Font.GothamBlack,
+        TextScaled = true, TextStrokeTransparency = 0, Text = "..."
+    }, bg)
+    esps[p] = bg
+    task.spawn(function()
+        while esps[p] and bg.Parent do
+            local r = role(p)
+            rl.Text = r
+            rl.TextColor3 = colOf(r)
+            task.wait(0.4)
+        end
+    end)
+end
+local function clearESP()
+    for p, b in pairs(esps) do
+        if b then b:Destroy() end
+        esps[p] = nil
+    end
+end
+
+-- ===================== HITBOX =====================
+local function restoreOne(p)
+    local o = hbOrig[p]
+    if not o then return end
+    local hrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Size = o.sz; hrp.CanCollide = o.cc; hrp.Transparency = o.tr
+    end
+    hbOrig[p] = nil
+end
+local function applyOne(p)
+    local hrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if not hbOrig[p] then
+        hbOrig[p] = { sz = hrp.Size, cc = hrp.CanCollide, tr = hrp.Transparency }
+    end
+    local n = S.hbSize
+    hrp.Size = Vector3.new(n, n, n)
+    hrp.CanCollide = false
+    hrp.Transparency = 0.65
+end
+local function updateHB()
+    if not S.hbMode then
+        for p in pairs(hbOrig) do restoreOne(p) end
+        return
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            if S.hbMode == "all" or role(p) == "ASESINO" then
+                applyOne(p)
+            else
+                restoreOne(p)
+            end
+        end
+    end
+end
+
+-- ===================== DISPARO =====================
+local function shootRemote()
+    for _, n in ipairs({ "Shoot", "ShootGun", "ShootEvent" }) do
+        local r = RS:FindFirstChild(n)
+        if r and r:IsA("RemoteEvent") then return r end
+        local f = RS:FindFirstChild("Remotes")
+        if f then
+            local r2 = f:FindFirstChild(n)
+            if r2 and r2:IsA("RemoteEvent") then return r2 end
+        end
+    end
+end
+local function equipGun()
+    local c = LP.Character
+    if not c or c:FindFirstChild("Gun") then return end
+    local bp = LP:FindFirstChild("Backpack")
+    local g = bp and (bp:FindFirstChild("Gun") or bp:FindFirstChild("Revolver"))
+    if g and c:FindFirstChild("Humanoid") then c.Humanoid:EquipTool(g) end
+end
+local function fire(target)
+    local c = target.Character
+    local head = c and c:FindFirstChild("Head")
+    if not head then return end
+    local rem = shootRemote()
+    if not rem then return end
+    local origin = cam().CFrame.Position
+    local dir = (head.Position - origin).Unit
+    pcall(function() rem:FireServer(head, origin, dir) end)
+    pcall(function() rem:FireServer(head, origin) end)
+end
+local function inFOV(pos)
+    local ok, sp, on = pcall(function() return cam():WorldToViewportPoint(pos) end)
+    if not ok or not on then return false end
+    local ctr = cam().ViewportSize / 2
+    return (Vector2.new(sp.X, sp.Y) - ctr).Magnitude <= S.fov
+end
+local function hasLOS(part)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.FilterDescendantsInstances = { LP.Character, part.Parent }
+    local hit = workspace:Raycast(cam().CFrame.Position, part.Position - cam().CFrame.Position, rp)
+    return hit == nil
+end
+
+-- ===================== INTERFAZ =====================
+local gui = nw("ScreenGui", {
+    Name = "DerekHub", ResetOnSpawn = false,
+    IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+}, PGui)
+
+local circle = nw("Frame", {
+    Size = UDim2.new(0, S.fov * 2, 0, S.fov * 2),
+    AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+    BackgroundTransparency = 1, Visible = false, ZIndex = 1
+}, gui)
+nw("UICorner", { CornerRadius = UDim.new(0.5, 0) }, circle)
+nw("UIStroke", { Thickness = 2, Color = C.a, Transparency = 0.35 }, circle)
+
+-- botón flotante
+local toggle = nw("TextButton", {
+    Size = UDim2.new(0, 44, 0, 44), Position = UDim2.new(0, 20, 0, 20),
+    BackgroundColor3 = C.a, Text = "D", TextColor3 = Color3.new(1,1,1),
+    Font = Enum.Font.GothamBlack, TextSize = 20, BorderSizePixel = 0
+}, gui)
+nw("UICorner", { CornerRadius = UDim.new(0, 10) }, toggle)
+nw("UIStroke", { Thickness = 1, Color = Color3.new(1,1,1), Transparency = 0.6 }, toggle)
+
+local main = nw("Frame", {
+    Size = UDim2.new(0, 380, 0, 460), Position = UDim2.new(0, 40, 0, 80),
+    BackgroundColor3 = C.bg, BorderSizePixel = 0, Active = true, Visible = false
+}, gui)
+nw("UICorner", { CornerRadius = UDim.new(0, 10) }, main)
+nw("UIStroke", { Thickness = 1, Color = C.a, Transparency = 0.4 }, main)
+
+local function setOpen(state)
+    main.Visible = state
+    toggle.BackgroundColor3 = state and C.r or C.a
+end
+toggle.MouseButton1Click:Connect(function() setOpen(not main.Visible) end)
+table.insert(conns, UIS.InputBegan:Connect(function(i, gpe)
+    if gpe then return end
+    if i.KeyCode == Enum.KeyCode.RightShift then setOpen(not main.Visible) end
+end))
+
+local bar = nw("Frame", {
+    Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.bar, BorderSizePixel = 0
+}, main)
+nw("UICorner", { CornerRadius = UDim.new(0, 10) }, bar)
+nw("TextLabel", {
+    Size = UDim2.new(1, -40, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+    BackgroundTransparency = 1, Font = Enum.Font.GothamBlack,
+    Text = "DEREK HUB  •  MM2", TextColor3 = C.a,
+    TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left
+}, bar)
+
+local closeBtn = nw("TextButton", {
+    Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -32, 0, 4),
+    BackgroundColor3 = C.r, Text = "X", TextColor3 = C.txt,
+    Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0
+}, bar)
+nw("UICorner", { CornerRadius = UDim.new(0, 6) }, closeBtn)
+
+-- arrastrar
+local drag, ds, dp
+table.insert(conns, bar.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        drag = true; ds = i.Position; dp = main.Position
+    end
+end))
+table.insert(conns, bar.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+end))
+table.insert(conns, UIS.InputChanged:Connect(function(i)
+    if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
+        main.Position = UDim2.new(dp.X.Scale, dp.X.Offset + (i.Position.X - ds.X),
+                                  dp.Y.Scale, dp.Y.Offset + (i.Position.Y - ds.Y))
+    end
+end))
+
+-- rol propio
+local myRole = nw("TextLabel", {
+    Size = UDim2.new(1, -20, 0, 24), Position = UDim2.new(0, 10, 0, 40),
+    BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
+    TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left, Text = "Rol: ..."
+}, main)
+task.spawn(function()
+    while S.alive do
+        local r = role(LP)
+        myRole.Text = "Tu rol: " .. r
+        myRole.TextColor3 = colOf(r)
+        task.wait(0.6)
+    end
+end)
+
+-- pestañas
+local tabs = { "Sheriff", "Asesino", "Visual", "Farm" }
+local pages, tabBtns = {}, {}
+local function showTab(name)
+    for n, f in pairs(pages) do f.Visible = (n == name) end
+    for n, b in pairs(tabBtns) do
+        b.BackgroundColor3 = (n == name) and C.a or C.btn
+    end
+end
+for i, name in ipairs(tabs) do
+    local b = nw("TextButton", {
+        Size = UDim2.new(0.25, -6, 0, 28), Position = UDim2.new(0.25 * (i - 1), 4, 0, 70),
+        BackgroundColor3 = C.btn, Text = name, TextColor3 = C.txt,
+        Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0
+    }, main)
+    nw("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+    tabBtns[name] = b
+    table.insert(conns, b.MouseButton1Click:Connect(function() showTab(name) end))
+    local f = nw("Frame", {
+        Size = UDim2.new(1, -20, 1, -115), Position = UDim2.new(0, 10, 0, 106),
+        BackgroundTransparency = 1, Visible = false
+    }, main)
+    nw("UIListLayout", { Padding = UDim.new(0, 6) }, f)
+    pages[name] = f
+end
+
+local function mkToggle(text, parent, cb)
+    local b = nw("TextButton", {
+        Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = C.btn,
+        Text = "✘  " .. text, TextColor3 = C.txt, Font = Enum.Font.GothamBold,
+        TextSize = 13, BorderSizePixel = 0, TextXAlignment = Enum.TextXAlignment.Left
+    }, parent)
+    nw("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+    nw("UIPadding", { PaddingLeft = UDim.new(0, 10) }, b)
+    local on = false
+    table.insert(conns, b.MouseButton1Click:Connect(function()
+        on = not on
+        b.Text = (on and "✔  " or "✘  ") .. text
+        b.BackgroundColor3 = on and C.g or C.btn
+        cb(on)
+    end))
+    return b
+end
+local function mkButton(text, parent, cb)
+    local b = nw("TextButton", {
+        Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = C.btn,
+        Text = text, TextColor3 = C.txt, Font = Enum.Font.GothamBold,
+        TextSize = 13, BorderSizePixel = 0
+    }, parent)
+    nw("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+    table.insert(conns, b.MouseButton1Click:Connect(cb))
+    return b
+end
+local function mkLabel(text, parent)
+    return nw("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
+        Text = text, TextColor3 = Color3.fromRGB(170, 170, 180),
+        Font = Enum.Font.Gotham, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, parent)
+end
+local function mkBox(text, parent)
+    local b = nw("TextBox", {
+        Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.btn,
+        Text = text, TextColor3 = C.txt, Font = Enum.Font.GothamBold,
+        TextSize = 13, BorderSizePixel = 0
+    }, parent)
+    nw("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+    return b
+end
+
+-- ===================== SHERIFF =====================
+mkLabel("AutoShoot con FOV (solo al asesino)", pages["Sheriff"])
+mkToggle("AutoShoot", pages["Sheriff"], function(on)
+    S.auto = on
+    circle.Visible = on
+end)
+mkLabel("FOV en píxeles (30 - 700)", pages["Sheriff"])
+local fovBox = mkBox(tostring(S.fov), pages["Sheriff"])
+table.insert(conns, fovBox.FocusLost:Connect(function()
+    local n = tonumber(fovBox.Text)
+    if n and n > 20 then
+        S.fov = math.clamp(n, 30, 700)
+        circle.Size = UDim2.new(0, S.fov * 2, 0, S.fov * 2)
+    end
+    fovBox.Text = tostring(S.fov)
+end))
+mkLabel("Cadencia en segundos", pages["Sheriff"])
+local rateBox = mkBox(tostring(S.rate), pages["Sheriff"])
+table.insert(conns, rateBox.FocusLost:Connect(function()
+    local n = tonumber(rateBox.Text)
+    if n and n >= 0.05 then S.rate = math.clamp(n, 0.05, 2) end
+    rateBox.Text = tostring(S.rate)
+end))
+mkButton("Equipar arma", pages["Sheriff"], function() equipGun() end)
+
+-- ===================== ASESINO =====================
+mkLabel("Auto cuchillo (golpea al más cercano)", pages["Asesino"])
+mkToggle("AutoKnife", pages["Asesino"], function(on) S.knife = on end)
+mkLabel("Rango de cuchillo", pages["Asesino"])
+local kRange = 10
+local rangeBox = mkBox("10", pages["Asesino"])
+table.insert(conns, rangeBox.FocusLost:Connect(function()
+    local n = tonumber(rangeBox.Text)
+    if n and n > 0 then kRange = math.clamp(n, 2, 40) end
+    rangeBox.Text = tostring(kRange)
+end))
+mkButton("Teleportar al asesino", pages["Asesino"], function()
+    local m = getMurderer()
+    if m and m.Character and m.Character:FindFirstChild("HumanoidRootPart") and LP.Character then
+        LP.Character.HumanoidRootPart.CFrame =
+            m.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+    end
+end)
+
+-- ===================== VISUAL =====================
+mkToggle("ESP con rol (Asesino / Sheriff / Inocente)", pages["Visual"], function(on)
+    S.esp = on
+    if not on then clearESP() end
+end)
+
+local hbAllBtn = mkToggle("Hitbox a TODOS", pages["Visual"], function(on)
+    S.hbMode = on and "all" or nil
+    updateHB()
+end)
+local hbMurBtn = mkToggle("Hitbox SOLO al asesino", pages["Visual"], function(on)
+    S.hbMode = on and "murderer" or nil
+    updateHB()
+end)
+
+mkLabel("Tamaño de hitbox", pages["Visual"])
+local hbBox = mkBox(tostring(S.hbSize), pages["Visual"])
+table.insert(conns, hbBox.FocusLost:Connect(function()
+    local n = tonumber(hbBox.Text)
+    if n and n > 2 then
+        S.hbSize = math.clamp(n, 4, 40)
+        if S.hbMode then
+            for p in pairs(hbOrig) do restoreOne(p) end
+            updateHB()
+        end
+    end
+    hbBox.Text = tostring(S.hbSize)
+end))
+mkButton("Actualizar ESP ahora", pages["Visual"], function()
+    clearESP()
+    for _, p in ipairs(Players:GetPlayers()) do addESP(p) end
+end)
+
+-- ===================== FARM =====================
+mkLabel("Recoge monedas automáticamente", pages["Farm"])
+mkToggle("AutoFarm monedas", pages["Farm"], function(on) S.coins = on end)
+mkButton("Auto Rejoin (servidor nuevo)", pages["Farm"], function()
+    pcall(function() TS:Teleport(game.PlaceId, LP) end)
+end)
+mkButton("Reaparecer (Reset)", pages["Farm"], function()
+    if LP.Character then LP.Character:BreakJoints() end
+end)
+
+showTab("Sheriff")
+
+-- ===================== CONFIRMACIÓN DE CIERRE =====================
+local confirm = nw("Frame", {
+    Size = UDim2.new(0, 260, 0, 120), Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = C.bg,
+    BorderSizePixel = 0, Visible = false, ZIndex = 10
+}, gui)
+nw("UICorner", { CornerRadius = UDim.new(0, 10) }, confirm)
+nw("UIStroke", { Thickness = 1, Color = C.a }, confirm)
+nw("TextLabel", {
+    Size = UDim2.new(1, -20, 0, 50), Position = UDim2.new(0, 10, 0, 10),
+    BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 15,
+    TextWrapped = true, TextColor3 = C.txt, Text = "¿Quieres cerrar el menú?"
+}, confirm)
+
+local function unload()
+    S.alive = false
+    for p in pairs(hbOrig) do restoreOne(p) end
+    clearESP()
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    table.clear(conns)
+    circle:Destroy()
+    confirm:Destroy()
+    main:Destroy()
+    toggle:Destroy()
+    gui:Destroy()
+end
+
+local yes = nw("TextButton", {
+    Size = UDim2.new(0, 110, 0, 32), Position = UDim2.new(0, 15, 0, 70),
+    BackgroundColor3 = C.g, Text = "Sí, cerrar", TextColor3 = C.txt,
+    Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0
+}, confirm)
+nw("UICorner", { CornerRadius = UDim.new(0, 6) }, yes)
+
+local no = nw("TextButton", {
+    Size = UDim2.new(0, 110, 0, 32), Position = UDim2.new(1, -125, 0, 70),
+    BackgroundColor3 = C.btn, Text = "No", TextColor3 = C.txt,
+    Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0
+}, confirm)
+nw("UICorner", { CornerRadius = UDim.new(0, 6) }, no)
+
+table.insert(conns, closeBtn.MouseButton1Click:Connect(function()
+    confirm.Visible = true
+    confirm.ZIndex = 10
+end))
+table.insert(conns, no.MouseButton1Click:Connect(function() confirm.Visible = false end))
+table.insert(conns, yes.MouseButton1Click:Connect(function() unload() end))
+
+-- ===================== LOOPS =====================
+table.insert(conns, Run.Heartbeat:Connect(function()
+    if not S.alive or not LP.Character then return end
+
+    if S.auto and role(LP) == "SHERIFF" then
+        local m = getMurderer()
+        if m and m.Character then
+            local head = m.Character:FindFirstChild("Head")
+            if head and inFOV(head.Position) and hasLOS(head) and tick() - S.lastFire > S.rate then
+                S.lastFire = tick()
+                equipGun()
+                fire(m)
+            end
+        end
+    end
+
+    if S.knife and LP.Character then
+        local hrp = LP.Character:FindFirstChild("HumanoidRootPart")
+        local target, best = nil, kRange
+        if hrp then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LP and p.Character and role(p) ~= "ASESINO" then
+                    local o = p.Character:FindFirstChild("HumanoidRootPart")
+                    if o then
+                        local d = (o.Position - hrp.Position).Magnitude
+                        if d < best then best = d; target = p end
+                    end
+                end
+            end
+        end
+        if target and tick() - S.lastKnife > 0.3 then
+            S.lastKnife = tick()
+            local k = LP.Character:FindFirstChild("Knife")
+                or (LP.Backpack and LP.Backpack:FindFirstChild("Knife"))
+            if k then
+                if k.Parent ~= LP.Character and LP.Character:FindFirstChild("Humanoid") then
+                    pcall(function() LP.Character.Humanoid:EquipTool(k) end)
+                end
+                pcall(function() k:Activate() end)
+            end
+        end
+    end
+end))
+
+task.spawn(function()
+    while S.alive do
+        if S.esp then
+            for _, p in ipairs(Players:GetPlayers()) do addESP(p) end
+        end
+        if S.hbMode then updateHB() end
+        task.wait(1)
+    end
+end)
+
+task.spawn(function()
+    while S.alive do
+        if S.coins and LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
+            for _, v in ipairs(workspace:GetDescendants()) do
+                if v:IsA("BasePart") and (v.Name == "Coin" or v.Name == "Money") then
+                    LP.Character.HumanoidRootPart.CFrame = v.CFrame + Vector3.new(0, 3, 0)
+                    break
+        
